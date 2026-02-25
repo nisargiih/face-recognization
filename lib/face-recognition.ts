@@ -24,10 +24,27 @@ export async function getFaceEmbeddings(imageElement: HTMLImageElement | HTMLCan
     .withFaceLandmarks()
     .withFaceDescriptors();
     
-  return detections.map(d => ({
-    embedding: Array.from(d.descriptor),
-    box: d.detection.box,
-  }));
+  return detections.map(d => {
+    // Extract face thumbnail
+    const { x, y, width, height } = d.detection.box;
+    const canvas = document.createElement('canvas');
+    canvas.width = 150;
+    canvas.height = 150;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.drawImage(
+        imageElement,
+        x, y, width, height,
+        0, 0, 150, 150
+      );
+    }
+    
+    return {
+      embedding: Array.from(d.descriptor),
+      box: d.detection.box,
+      thumbnail: canvas.toDataURL('image/jpeg', 0.7),
+    };
+  });
 }
 
 export function calculateDistance(embedding1: number[], embedding2: number[]) {

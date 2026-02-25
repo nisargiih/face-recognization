@@ -25,13 +25,19 @@ interface FaceEmbedding {
 }
 
 function LazyImage({ imageKey, fallback, className, alt }: { imageKey: string; fallback: string; className?: string; alt?: string }) {
-  const [src, setSrc] = useState<string | null>(imageKey.startsWith('data:') ? imageKey : null);
+  const [src, setSrc] = useState<string | null>(() => {
+    if (!imageKey) return fallback;
+    if (imageKey.startsWith('data:')) return imageKey;
+    return null;
+  });
 
   useEffect(() => {
-    if (imageKey.startsWith('data:')) return;
+    if (!imageKey || imageKey.startsWith('data:')) return;
     
     get(imageKey).then((val) => {
       setSrc(val || fallback);
+    }).catch(() => {
+      setSrc(fallback);
     });
   }, [imageKey, fallback]);
 
@@ -149,88 +155,81 @@ export default function FaceOrganizer() {
       try {
         const rawImageUrl = await readFileAsDataURL(file);
         // Resize for storage to avoid QuotaExceededError
-        const optimizedImageUrl = await resizeImage(rawImageUrl, 600, 600);
+        const optimizedImageUrl = await resizeImage(rawImageUrl, 800, 800);
         
         const img = await loadImage(optimizedImageUrl);
         const faces = await getFaceEmbeddings(img);
 
-        for (const face of faces) {
-          let matchedPersonId = `person_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-          let bestMatch = null;
-          let minDistance = 0.6; // Standard threshold for face-api.js
-          let isDuplicate = false;
+        if (faces.length > 0) {
+          // Save the full image once per file
+          const imageKey = `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          await set(imageKey, optimizedImageUrl);
 
-          // Optimization: Check centroids first (Vector Indexing)
-          const candidatePeople = sessionPeople.filter(p => {
-            if (!p.centroid) return true;
-            const dist = calculateDistance(face.embedding, p.centroid);
-            return dist < 0.8; // Broad filter
-          });
-          const candidatePersonIds = new Set(candidatePeople.map(p => p.personId));
-          const filteredEmbeddings = sessionEmbeddings.filter(e => candidatePersonIds.has(e.personId));
+          for (const face of faces) {
+            let matchedPersonId = `person_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            let bestMatch = null;
+            let minDistance = 0.6;
+            let isDuplicate = false;
 
-          for (const existing of filteredEmbeddings) {
-            const dist = calculateDistance(face.embedding, existing.embedding);
-            
-            // If distance is extremely low, it's the exact same face/photo
-            if (dist < 0.05) {
-              isDuplicate = true;
-              break;
+            // Optimization: Check centroids first
+            const candidatePeople = sessionPeople.filter(p => {
+              if (!p.centroid) return true;
+              const dist = calculateDistance(face.embedding, p.centroid);
+              return dist < 0.8;
+            });
+            const candidatePersonIds = new Set(candidatePeople.map(p => p.personId));
+            const filteredEmbeddings = sessionEmbeddings.filter(e => candidatePersonIds.has(e.personId));
+
+            for (const existing of filteredEmbeddings) {
+              const dist = calculateDistance(face.embedding, existing.embedding);
+              
+              if (dist < 0.05) {
+                isDuplicate = true;
+                break;
+              }
+
+              if (dist < minDistance) {
+                minDistance = dist;
+                bestMatch = existing;
+              }
             }
 
-            if (dist < minDistance) {
-              minDistance = dist;
-              bestMatch = existing;
+            if (isDuplicate) continue;
+
+            if (bestMatch) {
+              matchedPersonId = bestMatch.personId;
+            } else {
+              // Create new person with face thumbnail
+              const pPostRes = await fetch('/api/persons', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  personId: matchedPersonId,
+                  name: 'Unknown Person',
+                  thumbnailUrl: face.thumbnail, // Use face crop for thumbnail
+                }),
+              });
+              if (pPostRes.ok) {
+                const newPerson = await pPostRes.json();
+                sessionPeople.push(newPerson);
+              }
             }
-          }
 
-          if (isDuplicate) continue;
-
-          if (bestMatch) {
-            matchedPersonId = bestMatch.personId;
-          } else {
-            // Create new person
-            const pPostRes = await fetch('/api/persons', {
+            const ePostRes = await fetch('/api/embeddings', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 personId: matchedPersonId,
-                name: 'Unknown Person',
-                thumbnailUrl: optimizedImageUrl,
+                embedding: face.embedding,
+                imageUrl: imageKey,
+                source: 'local',
               }),
             });
-            if (pPostRes.ok) {
-              const newPerson = await pPostRes.json();
-              sessionPeople.push(newPerson);
+
+            if (ePostRes.ok) {
+              const newEmbedding = await ePostRes.json();
+              sessionEmbeddings.push(newEmbedding);
             }
-          }
-
-          const imageKey = `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-          try {
-            await set(imageKey, optimizedImageUrl);
-          } catch (err: any) {
-            if (err.name === 'QuotaExceededError') {
-              toast.error('Local storage full. Please clear cache to continue.');
-              setProcessing(false);
-              return;
-            }
-            throw err;
-          }
-
-          const ePostRes = await fetch('/api/embeddings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              personId: matchedPersonId,
-              embedding: face.embedding,
-              imageUrl: imageKey,
-              source: 'local',
-            }),
-          });
-
-          if (ePostRes.ok) {
-            const newEmbedding = await ePostRes.json();
-            sessionEmbeddings.push(newEmbedding);
           }
         }
       } catch (error) {
@@ -520,7 +519,7 @@ export default function FaceOrganizer() {
                         <div className="aspect-square rounded-xl overflow-hidden bg-gray-100">
                           <LazyImage
                             imageKey={emb.imageUrl}
-                            fallback="https://picsum.photos/200"
+                            fallback=""
                             className="w-full h-full object-cover"
                             alt={`Photo ${i}`}
                           />
@@ -547,7 +546,7 @@ export default function FaceOrganizer() {
                         {person.thumbnailUrl ? (
                           <LazyImage
                             imageKey={person.thumbnailUrl}
-                            fallback="https://picsum.photos/seed/broken/200"
+                            fallback=""
                             className="w-full h-full object-cover"
                             alt={person.name}
                           />
@@ -617,7 +616,7 @@ export default function FaceOrganizer() {
                       <div className="aspect-square rounded-xl overflow-hidden bg-gray-100">
                         <LazyImage
                           imageKey={result.embedding.imageUrl}
-                          fallback="https://picsum.photos/200"
+                          fallback=""
                           className="w-full h-full object-cover"
                           alt={`Match ${i}`}
                         />
