@@ -30,6 +30,7 @@ export async function GET(req: Request) {
           personId: 1,
           name: 1,
           thumbnailUrl: 1,
+          centroid: 1,
           createdAt: 1,
           photoCount: { $size: '$photos' }
         }

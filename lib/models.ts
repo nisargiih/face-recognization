@@ -16,6 +16,7 @@ const PersonSchema = new Schema({
   name: { type: String, default: 'Unknown Person' },
   personId: { type: String, required: true },
   thumbnailUrl: { type: String }, // Base64 or GDrive link
+  centroid: { type: [Number] }, // Average embedding for faster search
   createdAt: { type: Date, default: Date.now },
 });
 

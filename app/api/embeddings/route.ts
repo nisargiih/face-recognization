@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import dbConnect from '@/lib/mongodb';
-import { FaceEmbedding } from '@/lib/models';
+import { FaceEmbedding, Person } from '@/lib/models';
 import { verifyToken } from '@/lib/auth';
 
 export async function GET(req: Request) {
@@ -37,6 +37,25 @@ export async function POST(req: Request) {
       imageUrl,
       source,
     });
+
+    // Update Person's centroid for faster vector search
+    const allEmbeddings = await FaceEmbedding.find({ personId, userId: decoded.userId });
+    if (allEmbeddings.length > 0) {
+      const vectorSize = allEmbeddings[0].embedding.length;
+      const sumVector = new Array(vectorSize).fill(0);
+      
+      for (const emb of allEmbeddings) {
+        for (let i = 0; i < vectorSize; i++) {
+          sumVector[i] += emb.embedding[i];
+        }
+      }
+      
+      const centroid = sumVector.map(v => v / allEmbeddings.length);
+      await Person.findOneAndUpdate(
+        { personId, userId: decoded.userId },
+        { centroid }
+      );
+    }
 
     return NextResponse.json(newEmbedding);
   } catch (error: any) {

@@ -12,6 +12,7 @@ interface Person {
   personId: string;
   name: string;
   thumbnailUrl: string;
+  centroid?: number[];
   photoCount?: number;
 }
 
@@ -158,7 +159,16 @@ export default function FaceOrganizer() {
           let minDistance = 0.6; // Standard threshold for face-api.js
           let isDuplicate = false;
 
-          for (const existing of sessionEmbeddings) {
+          // Optimization: Check centroids first (Vector Indexing)
+          const candidatePeople = sessionPeople.filter(p => {
+            if (!p.centroid) return true;
+            const dist = calculateDistance(face.embedding, p.centroid);
+            return dist < 0.8; // Broad filter
+          });
+          const candidatePersonIds = new Set(candidatePeople.map(p => p.personId));
+          const filteredEmbeddings = sessionEmbeddings.filter(e => candidatePersonIds.has(e.personId));
+
+          for (const existing of filteredEmbeddings) {
             const dist = calculateDistance(face.embedding, existing.embedding);
             
             // If distance is extremely low, it's the exact same face/photo
@@ -256,11 +266,21 @@ export default function FaceOrganizer() {
       const personMatches: Record<string, { embedding: FaceEmbedding; score: number; confidence: 'High' | 'Medium' | 'Low' }> = {};
       
       for (const face of faces) {
-        for (const existing of embeddings) {
+        // Stage 1: Filter people using centroids (Vector Indexing Technique)
+        const candidatePeople = people.filter(p => {
+          if (!p.centroid) return true; // Fallback for people without centroids
+          const dist = calculateDistance(face.embedding, p.centroid);
+          return dist < 0.75; // Broad filter to catch potential matches
+        });
+
+        // Stage 2: Detailed comparison against candidate embeddings
+        const candidatePersonIds = new Set(candidatePeople.map(p => p.personId));
+        const filteredEmbeddings = embeddings.filter(e => candidatePersonIds.has(e.personId));
+
+        for (const existing of filteredEmbeddings) {
           const dist = calculateDistance(face.embedding, existing.embedding);
           
           // Refined threshold logic with confidence levels
-          // face-api.js standard: < 0.6 is a match
           if (dist < 0.6) {
             const score = 1 - dist;
             let confidence: 'High' | 'Medium' | 'Low' = 'Low';
