@@ -14,10 +14,13 @@ export const User = models.User || model('User', UserSchema);
 const PersonSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   name: { type: String, default: 'Unknown Person' },
-  personId: { type: String, required: true, unique: true },
+  personId: { type: String, required: true },
   thumbnailUrl: { type: String }, // Base64 or GDrive link
   createdAt: { type: Date, default: Date.now },
 });
+
+// Compound index for uniqueness per user
+PersonSchema.index({ userId: 1, personId: 1 }, { unique: true });
 
 export const Person = models.Person || model('Person', PersonSchema);
 

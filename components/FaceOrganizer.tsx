@@ -12,6 +12,7 @@ interface Person {
   personId: string;
   name: string;
   thumbnailUrl: string;
+  photoCount?: number;
 }
 
 interface FaceEmbedding {
@@ -22,8 +23,34 @@ interface FaceEmbedding {
   source: 'local' | 'gdrive';
 }
 
+function LazyImage({ imageKey, fallback, className, alt }: { imageKey: string; fallback: string; className?: string; alt?: string }) {
+  const [src, setSrc] = useState<string | null>(imageKey.startsWith('data:') ? imageKey : null);
+
+  useEffect(() => {
+    if (imageKey.startsWith('data:')) return;
+    
+    get(imageKey).then((val) => {
+      setSrc(val || fallback);
+    });
+  }, [imageKey, fallback]);
+
+  if (!src) return <div className={`${className} bg-gray-100 animate-pulse`} />;
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className={className}
+      onError={(e) => {
+        (e.target as HTMLImageElement).src = fallback;
+      }}
+    />
+  );
+}
+
 export default function FaceOrganizer() {
   const [activeTab, setActiveTab] = useState<'upload' | 'search' | 'people'>('upload');
+  const [initialLoading, setInitialLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [gdriveUrl, setGdriveUrl] = useState('');
@@ -36,8 +63,12 @@ export default function FaceOrganizer() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    fetchData();
-    loadLocalImages();
+    const init = async () => {
+      setInitialLoading(true);
+      await Promise.all([fetchData(), loadLocalImages()]);
+      setInitialLoading(false);
+    };
+    init();
   }, []);
 
   const fetchData = async () => {
@@ -54,19 +85,9 @@ export default function FaceOrganizer() {
   };
 
   const loadLocalImages = async () => {
-    try {
-      const imgKeys = await keys();
-      const images: Record<string, string> = {};
-      for (const key of imgKeys) {
-        if (typeof key === 'string' && key.startsWith('img_')) {
-          const val = await get(key);
-          if (val) images[key] = val;
-        }
-      }
-      setLocalImages(images);
-    } catch (error) {
-      console.error('Failed to load local images from IndexedDB');
-    }
+    // We don't need to load all images into memory anymore.
+    // We will fetch them on-demand in the UI components.
+    setLocalImages({});
   };
 
   const resizeImage = (url: string, maxWidth = 800, maxHeight = 800): Promise<string> => {
@@ -108,6 +129,10 @@ export default function FaceOrganizer() {
     const total = files.length;
     let processed = 0;
 
+    // Keep track of new people and embeddings created in this session to avoid duplicates
+    const sessionEmbeddings = [...embeddings];
+    const sessionPeople = [...people];
+
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (!file.type.startsWith('image/')) continue;
@@ -123,20 +148,31 @@ export default function FaceOrganizer() {
         for (const face of faces) {
           let matchedPersonId = `person_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
           let bestMatch = null;
-          let minDistance = 0.55; // Slightly stricter threshold
+          let minDistance = 0.5; // Stricter threshold for clustering
+          let isDuplicate = false;
 
-          for (const existing of embeddings) {
+          for (const existing of sessionEmbeddings) {
             const dist = calculateDistance(face.embedding, existing.embedding);
+            
+            // If distance is extremely low, it's likely the exact same photo/face re-uploaded
+            if (dist < 0.02) {
+              isDuplicate = true;
+              break;
+            }
+
             if (dist < minDistance) {
               minDistance = dist;
               bestMatch = existing;
             }
           }
 
+          if (isDuplicate) continue;
+
           if (bestMatch) {
             matchedPersonId = bestMatch.personId;
           } else {
-            await fetch('/api/persons', {
+            // Create new person
+            const pRes = await fetch('/api/persons', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -145,6 +181,10 @@ export default function FaceOrganizer() {
                 thumbnailUrl: optimizedImageUrl,
               }),
             });
+            if (pRes.ok) {
+              const newPerson = await pRes.json();
+              sessionPeople.push(newPerson);
+            }
           }
 
           const imageKey = `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -159,7 +199,7 @@ export default function FaceOrganizer() {
             throw err;
           }
 
-          await fetch('/api/embeddings', {
+          const eRes = await fetch('/api/embeddings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -169,6 +209,11 @@ export default function FaceOrganizer() {
               source: 'local',
             }),
           });
+
+          if (eRes.ok) {
+            const newEmbedding = await eRes.json();
+            sessionEmbeddings.push(newEmbedding);
+          }
         }
       } catch (error) {
         console.error('Error processing file:', file.name, error);
@@ -248,7 +293,14 @@ export default function FaceOrganizer() {
 
   return (
     <div className="space-y-8">
-      {/* Tabs & Actions */}
+      {initialLoading ? (
+        <div className="flex flex-col items-center justify-center py-32 space-y-4">
+          <Loader2 className="w-12 h-12 animate-spin text-black" />
+          <p className="text-gray-500 font-medium animate-pulse">Initializing Face Organizer...</p>
+        </div>
+      ) : (
+        <>
+          {/* Tabs & Actions */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div className="flex space-x-1 bg-gray-100 p-1 rounded-2xl w-fit">
           {[
@@ -379,18 +431,27 @@ export default function FaceOrganizer() {
               people.map((person) => (
                 <div key={person._id} className="bg-white p-4 rounded-3xl border border-black/5 shadow-sm group hover:scale-[1.02] transition-all cursor-pointer">
                   <div className="aspect-square rounded-2xl overflow-hidden mb-4 bg-gray-100 relative">
-                    <img
-                      src={person.thumbnailUrl}
-                      alt={person.name}
-                      className="w-full h-full object-cover"
-                    />
+                    {person.thumbnailUrl ? (
+                      <img
+                        src={person.thumbnailUrl}
+                        alt={person.name}
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src = 'https://picsum.photos/seed/broken/200';
+                        }}
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center bg-gray-50">
+                        <Users className="w-8 h-8 text-gray-200" />
+                      </div>
+                    )}
                     <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                       <span className="text-white text-xs font-bold uppercase tracking-widest">View Photos</span>
                     </div>
                   </div>
                   <h4 className="font-bold text-center truncate">{person.name}</h4>
                   <p className="text-[10px] text-gray-400 text-center uppercase tracking-widest mt-1">
-                    {embeddings.filter(e => e.personId === person.personId).length} Photos
+                    {person.photoCount || 0} Photos
                   </p>
                 </div>
               ))
@@ -441,10 +502,11 @@ export default function FaceOrganizer() {
                   {searchResults.map((result, i) => (
                     <div key={i} className="bg-white p-2 rounded-2xl border border-black/5 shadow-sm relative group">
                       <div className="aspect-square rounded-xl overflow-hidden bg-gray-100">
-                        <img
-                          src={localImages[result.embedding.imageUrl] || 'https://picsum.photos/200'}
-                          alt={`Match ${i}`}
+                        <LazyImage
+                          imageKey={result.embedding.imageUrl}
+                          fallback="https://picsum.photos/200"
                           className="w-full h-full object-cover"
+                          alt={`Match ${i}`}
                         />
                       </div>
                       <div className="absolute top-3 right-3 bg-black/80 text-white text-[10px] font-bold px-2 py-1 rounded-full backdrop-blur-md border border-white/10">
@@ -458,6 +520,8 @@ export default function FaceOrganizer() {
           </motion.div>
         )}
       </AnimatePresence>
+        </>
+      )}
     </div>
   );
 }

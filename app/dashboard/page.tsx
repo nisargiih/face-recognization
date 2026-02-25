@@ -39,7 +39,7 @@ export default function DashboardPage() {
         <div className="max-w-7xl mx-auto">
           <header className="mb-12 flex flex-col md:flex-row md:items-end justify-between gap-6">
             <div>
-              <h1 className="text-3xl font-bold tracking-tight">Welcome back, {user.name.split(' ')[0]}!</h1>
+              <h1 className="text-3xl font-bold tracking-tight text-gray-900">Welcome back, {user.name.split(' ')[0]}!</h1>
               <p className="text-gray-500">Manage your photo library and find anyone instantly.</p>
             </div>
             <div className="flex items-center space-x-2 px-4 py-2 bg-emerald-50 text-emerald-700 rounded-full border border-emerald-100 text-sm font-bold">

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import mongoose from 'mongoose';
 import dbConnect from '@/lib/mongodb';
 import { Person } from '@/lib/models';
 import { verifyToken } from '@/lib/auth';
@@ -12,7 +13,30 @@ export async function GET(req: Request) {
     if (!decoded) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     await dbConnect();
-    const persons = await Person.find({ userId: decoded.userId }).sort({ createdAt: -1 });
+    
+    const persons = await Person.aggregate([
+      { $match: { userId: new mongoose.Types.ObjectId(decoded.userId) } },
+      {
+        $lookup: {
+          from: 'faceembeddings',
+          localField: 'personId',
+          foreignField: 'personId',
+          as: 'photos'
+        }
+      },
+      {
+        $project: {
+          _id: 1,
+          personId: 1,
+          name: 1,
+          thumbnailUrl: 1,
+          createdAt: 1,
+          photoCount: { $size: '$photos' }
+        }
+      },
+      { $sort: { createdAt: -1 } }
+    ]);
+
     return NextResponse.json(persons);
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
