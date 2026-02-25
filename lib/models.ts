@@ -32,6 +32,15 @@ const FaceEmbeddingSchema = new Schema({
 
 export const FaceEmbedding = models.FaceEmbedding || model('FaceEmbedding', FaceEmbeddingSchema);
 
+const SuggestionSchema = new Schema({
+  userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  content: { type: String, required: true },
+  status: { type: String, enum: ['pending', 'reviewed', 'implemented'], default: 'pending' },
+  createdAt: { type: Date, default: Date.now },
+});
+
+export const Suggestion = models.Suggestion || model('Suggestion', SuggestionSchema);
+
 const ContactSchema = new Schema({
   name: { type: String, required: true },
   email: { type: String, required: true },

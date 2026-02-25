@@ -2,10 +2,10 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { toast } from 'react-hot-toast';
-import { FolderUp, Link as LinkIcon, Search, Users, Loader2, Image as ImageIcon, X, CheckCircle2, AlertCircle, ShieldCheck } from 'lucide-react';
+import { FolderUp, Link as LinkIcon, Search, Users, Loader2, Image as ImageIcon, X, CheckCircle2, AlertCircle, ShieldCheck, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getFaceEmbeddings, calculateDistance } from '@/lib/face-recognition';
-import { set, get, keys, del } from 'idb-keyval';
+import { set, get, keys, clear } from 'idb-keyval';
 
 interface Person {
   _id: string;
@@ -31,11 +31,13 @@ export default function FaceOrganizer() {
   const [embeddings, setEmbeddings] = useState<FaceEmbedding[]>([]);
   const [searchResults, setSearchResults] = useState<{ embedding: FaceEmbedding; score: number }[]>([]);
   const [searchImage, setSearchImage] = useState<string | null>(null);
+  const [localImages, setLocalImages] = useState<Record<string, string>>({});
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetchData();
+    loadLocalImages();
   }, []);
 
   const fetchData = async () => {
@@ -49,6 +51,52 @@ export default function FaceOrganizer() {
     } catch (error) {
       console.error('Failed to fetch data');
     }
+  };
+
+  const loadLocalImages = async () => {
+    try {
+      const imgKeys = await keys();
+      const images: Record<string, string> = {};
+      for (const key of imgKeys) {
+        if (typeof key === 'string' && key.startsWith('img_')) {
+          const val = await get(key);
+          if (val) images[key] = val;
+        }
+      }
+      setLocalImages(images);
+    } catch (error) {
+      console.error('Failed to load local images from IndexedDB');
+    }
+  };
+
+  const resizeImage = (url: string, maxWidth = 800, maxHeight = 800): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > maxWidth) {
+            height *= maxWidth / width;
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width *= maxHeight / height;
+            height = maxHeight;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.7)); // Compress to JPEG 70%
+      };
+      img.src = url;
+    });
   };
 
   const handleFolderUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -65,15 +113,17 @@ export default function FaceOrganizer() {
       if (!file.type.startsWith('image/')) continue;
 
       try {
-        const imageUrl = await readFileAsDataURL(file);
-        const img = await loadImage(imageUrl);
+        const rawImageUrl = await readFileAsDataURL(file);
+        // Resize for storage to avoid QuotaExceededError
+        const optimizedImageUrl = await resizeImage(rawImageUrl, 600, 600);
+        
+        const img = await loadImage(optimizedImageUrl);
         const faces = await getFaceEmbeddings(img);
 
         for (const face of faces) {
-          // Find matching person
           let matchedPersonId = `person_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
           let bestMatch = null;
-          let minDistance = 0.6; // Threshold
+          let minDistance = 0.55; // Slightly stricter threshold
 
           for (const existing of embeddings) {
             const dist = calculateDistance(face.embedding, existing.embedding);
@@ -86,23 +136,29 @@ export default function FaceOrganizer() {
           if (bestMatch) {
             matchedPersonId = bestMatch.personId;
           } else {
-            // Create new person
             await fetch('/api/persons', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 personId: matchedPersonId,
                 name: 'Unknown Person',
-                thumbnailUrl: imageUrl,
+                thumbnailUrl: optimizedImageUrl,
               }),
             });
           }
 
-          // Store image in IndexedDB
           const imageKey = `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-          await set(imageKey, imageUrl);
+          try {
+            await set(imageKey, optimizedImageUrl);
+          } catch (err: any) {
+            if (err.name === 'QuotaExceededError') {
+              toast.error('Local storage full. Please clear cache to continue.');
+              setProcessing(false);
+              return;
+            }
+            throw err;
+          }
 
-          // Store embedding
           await fetch('/api/embeddings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -125,6 +181,7 @@ export default function FaceOrganizer() {
     setProcessing(false);
     toast.success('Folder processed successfully!');
     fetchData();
+    loadLocalImages();
   };
 
   const handleSearch = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -163,6 +220,14 @@ export default function FaceOrganizer() {
     }
   };
 
+  const handleClearCache = async () => {
+    if (confirm('Are you sure you want to clear your local image cache? This will remove all photos stored in this browser.')) {
+      await clear();
+      setLocalImages({});
+      toast.success('Cache cleared.');
+    }
+  };
+
   const readFileAsDataURL = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -181,41 +246,36 @@ export default function FaceOrganizer() {
     });
   };
 
-  const [localImages, setLocalImages] = useState<Record<string, string>>({});
-  useEffect(() => {
-    const loadLocalImages = async () => {
-      const imgKeys = await keys();
-      const images: Record<string, string> = {};
-      for (const key of imgKeys) {
-        if (typeof key === 'string' && key.startsWith('img_')) {
-          images[key] = await get(key);
-        }
-      }
-      setLocalImages(images);
-    };
-    loadLocalImages();
-  }, [embeddings]);
-
   return (
     <div className="space-y-8">
-      {/* Tabs */}
-      <div className="flex space-x-1 bg-gray-100 p-1 rounded-2xl w-fit">
-        {[
-          { id: 'upload', icon: FolderUp, label: 'Upload' },
-          { id: 'people', icon: Users, label: 'People' },
-          { id: 'search', icon: Search, label: 'Search' },
-        ].map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id as any)}
-            className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${
-              activeTab === tab.id ? 'bg-white text-black shadow-sm' : 'text-gray-500 hover:text-black'
-            }`}
-          >
-            <tab.icon className="w-4 h-4" />
-            <span>{tab.label}</span>
-          </button>
-        ))}
+      {/* Tabs & Actions */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div className="flex space-x-1 bg-gray-100 p-1 rounded-2xl w-fit">
+          {[
+            { id: 'upload', icon: FolderUp, label: 'Upload' },
+            { id: 'people', icon: Users, label: 'People' },
+            { id: 'search', icon: Search, label: 'Search' },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as any)}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${
+                activeTab === tab.id ? 'bg-white text-black shadow-sm' : 'text-gray-500 hover:text-black'
+              }`}
+            >
+              <tab.icon className="w-4 h-4" />
+              <span>{tab.label}</span>
+            </button>
+          ))}
+        </div>
+        
+        <button 
+          onClick={handleClearCache}
+          className="flex items-center space-x-2 text-xs font-bold text-red-500 hover:text-red-600 transition-colors px-4 py-2 rounded-xl bg-red-50 border border-red-100"
+        >
+          <Trash2 className="w-3 h-3" />
+          <span>Clear Local Cache</span>
+        </button>
       </div>
 
       <AnimatePresence mode="wait">
@@ -228,7 +288,6 @@ export default function FaceOrganizer() {
             className="space-y-6"
           >
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Folder Upload */}
               <div 
                 onClick={() => fileInputRef.current?.click()}
                 className="bg-white p-12 rounded-[2.5rem] border-2 border-dashed border-black/10 hover:border-black/20 transition-all cursor-pointer text-center group"
@@ -250,7 +309,6 @@ export default function FaceOrganizer() {
                 <p className="text-gray-400 text-sm">Select a folder from your PC to process all images.</p>
               </div>
 
-              {/* GDrive Link */}
               <div className="bg-white p-12 rounded-[2.5rem] border border-black/5 shadow-sm text-center flex flex-col justify-center">
                 <div className="w-16 h-16 bg-gray-50 rounded-2xl flex items-center justify-center mx-auto mb-6">
                   <LinkIcon className="w-8 h-8 text-gray-400" />
@@ -294,9 +352,10 @@ export default function FaceOrganizer() {
             <div className="bg-amber-50 border border-amber-200 p-6 rounded-3xl flex items-start space-x-4">
               <ShieldCheck className="w-6 h-6 text-amber-600 shrink-0" />
               <div>
-                <h4 className="font-bold text-amber-900">Privacy Notice</h4>
+                <h4 className="font-bold text-amber-900">Privacy & Storage</h4>
                 <p className="text-sm text-amber-800">
-                  We do not store your original photos on our servers. Images uploaded from your PC are stored locally in your browser&apos;s IndexedDB. Only face embeddings (mathematical representations) are stored in our database to enable cross-device search.
+                  We do not store your original photos on our servers. Images are optimized and stored locally in your browser&apos;s IndexedDB. 
+                  <span className="block mt-1 font-semibold">Note: Local storage is limited. If you see errors, try clearing your cache.</span>
                 </p>
               </div>
             </div>

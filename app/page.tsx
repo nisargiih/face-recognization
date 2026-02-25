@@ -97,16 +97,25 @@ export default function LandingPage() {
               <h2 className="text-4xl md:text-6xl font-bold tracking-tighter leading-none mb-6">
                 How It <br />Works.
               </h2>
-              <p className="text-gray-500 text-lg">
+              <p className="text-gray-500 text-lg mb-8">
                 Three simple steps to organize thousands of photos in seconds.
               </p>
+              <div className="p-6 bg-emerald-50 border border-emerald-100 rounded-3xl">
+                <div className="flex items-center space-x-3 text-emerald-700 font-bold mb-2">
+                  <ShieldCheck className="w-5 h-5" />
+                  <span>Privacy Guaranteed</span>
+                </div>
+                <p className="text-sm text-emerald-600 leading-relaxed">
+                  Your photos never leave your device. We process everything locally and only store mathematical face signatures.
+                </p>
+              </div>
             </div>
             
             <div className="lg:col-span-8 grid grid-cols-1 md:grid-cols-3 gap-8">
               {[
-                { step: '01', icon: FolderUp, title: 'Import Photos', desc: 'Upload a folder from your PC or provide a public Google Drive link.' },
-                { step: '02', icon: Users, title: 'AI Clustering', desc: 'Our AI automatically detects and groups faces into unique person profiles.' },
-                { step: '03', icon: Search, title: 'Search by Photo', desc: 'Upload a reference photo to find every image matching that person instantly.' },
+                { step: '01', icon: FolderUp, title: 'Upload & Import', desc: 'Select a folder from your PC or paste a public Google Drive link to begin.' },
+                { step: '02', icon: Users, title: 'AI Detection', desc: 'Our advanced AI scans your images to detect and group faces automatically.' },
+                { step: '03', icon: Search, title: 'Face Search', desc: 'Upload a single photo to find every match across your entire library instantly.' },
               ].map((item, i) => (
                 <div key={i} className="relative p-8 rounded-3xl bg-[#f9f9f9] border border-black/5 group hover:bg-black hover:text-white transition-all duration-500">
                   <span className="absolute top-6 right-8 text-4xl font-serif italic opacity-10 group-hover:opacity-20 transition-opacity">

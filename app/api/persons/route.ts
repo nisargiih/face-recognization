@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import dbConnect from '@/lib/mongodb';
-import { Person, FaceEmbedding } from '@/lib/models';
+import { Person } from '@/lib/models';
 import { verifyToken } from '@/lib/auth';
 
 export async function GET(req: Request) {
