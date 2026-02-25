@@ -67,6 +67,8 @@ export default function FaceOrganizer() {
   const [searchImage, setSearchImage] = useState<string | null>(null);
   const [localImages, setLocalImages] = useState<Record<string, string>>({});
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [newName, setNewName] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -145,99 +147,131 @@ export default function FaceOrganizer() {
     const currentPeople: Person[] = pRes.ok ? await pRes.json() : [];
     const currentEmbeddings: FaceEmbedding[] = eRes.ok ? await eRes.json() : [];
 
-    const sessionEmbeddings = [...currentEmbeddings];
     const sessionPeople = [...currentPeople];
+    const sessionEmbeddings = [...currentEmbeddings];
 
+    // 1. Collect all faces from all files in the batch
+    const batchFaces: { embedding: number[]; thumbnail: string; imageKey: string }[] = [];
+    
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (!file.type.startsWith('image/')) continue;
 
       try {
         const rawImageUrl = await readFileAsDataURL(file);
-        // Resize for storage to avoid QuotaExceededError
         const optimizedImageUrl = await resizeImage(rawImageUrl, 800, 800);
-        
         const img = await loadImage(optimizedImageUrl);
         const faces = await getFaceEmbeddings(img);
 
         if (faces.length > 0) {
-          // Save the full image once per file
           const imageKey = `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
           await set(imageKey, optimizedImageUrl);
-
+          
           for (const face of faces) {
-            let matchedPersonId = `person_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-            let bestMatch = null;
-            let minDistance = 0.6;
-            let isDuplicate = false;
-
-            // Optimization: Check centroids first
-            const candidatePeople = sessionPeople.filter(p => {
-              if (!p.centroid) return true;
-              const dist = calculateDistance(face.embedding, p.centroid);
-              return dist < 0.8;
+            batchFaces.push({
+              embedding: face.embedding,
+              thumbnail: face.thumbnail,
+              imageKey
             });
-            const candidatePersonIds = new Set(candidatePeople.map(p => p.personId));
-            const filteredEmbeddings = sessionEmbeddings.filter(e => candidatePersonIds.has(e.personId));
-
-            for (const existing of filteredEmbeddings) {
-              const dist = calculateDistance(face.embedding, existing.embedding);
-              
-              if (dist < 0.05) {
-                isDuplicate = true;
-                break;
-              }
-
-              if (dist < minDistance) {
-                minDistance = dist;
-                bestMatch = existing;
-              }
-            }
-
-            if (isDuplicate) continue;
-
-            if (bestMatch) {
-              matchedPersonId = bestMatch.personId;
-            } else {
-              // Create new person with face thumbnail
-              const pPostRes = await fetch('/api/persons', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  personId: matchedPersonId,
-                  name: 'Unknown Person',
-                  thumbnailUrl: face.thumbnail, // Use face crop for thumbnail
-                }),
-              });
-              if (pPostRes.ok) {
-                const newPerson = await pPostRes.json();
-                sessionPeople.push(newPerson);
-              }
-            }
-
-            const ePostRes = await fetch('/api/embeddings', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                personId: matchedPersonId,
-                embedding: face.embedding,
-                imageUrl: imageKey,
-                source: 'local',
-              }),
-            });
-
-            if (ePostRes.ok) {
-              const newEmbedding = await ePostRes.json();
-              sessionEmbeddings.push(newEmbedding);
-            }
           }
         }
       } catch (error) {
         console.error('Error processing file:', file.name, error);
       }
-
       processed++;
-      setProgress(Math.round((processed / total) * 100));
+      setProgress(Math.round((processed / total) * 0.5)); // First 50% is extraction
+    }
+
+    // 2. Cluster the batch faces
+    // We use a simple clustering algorithm: 
+    // For each face, find if it matches an existing person or another face in the batch
+    const clusters: { personId: string; faces: typeof batchFaces }[] = [];
+
+    for (const face of batchFaces) {
+      let matchedCluster = null;
+      let minDistance = 0.55; // Slightly stricter for batch clustering
+
+      // Check existing people first
+      for (const person of sessionPeople) {
+        if (!person.centroid) continue;
+        const dist = calculateDistance(face.embedding, person.centroid);
+        if (dist < minDistance) {
+          minDistance = dist;
+          matchedCluster = { personId: person.personId, isNew: false };
+        }
+      }
+
+      // If no person match, check clusters created in this batch
+      if (!matchedCluster) {
+        for (const cluster of clusters) {
+          // Compare against the first face of the cluster (representative)
+          const dist = calculateDistance(face.embedding, cluster.faces[0].embedding);
+          if (dist < 0.5) { // Stricter for intra-batch clustering
+            matchedCluster = { personId: cluster.personId, isNew: true, cluster };
+            break;
+          }
+        }
+      }
+
+      if (matchedCluster) {
+        if (matchedCluster.cluster) {
+          matchedCluster.cluster.faces.push(face);
+        } else {
+          // It matched an existing person, but we need a cluster to hold it for this batch
+          let existingCluster = clusters.find(c => c.personId === matchedCluster.personId);
+          if (existingCluster) {
+            existingCluster.faces.push(face);
+          } else {
+            clusters.push({ personId: matchedCluster.personId, faces: [face] });
+          }
+        }
+      } else {
+        // Create a new cluster/person
+        const newPersonId = `person_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        clusters.push({ personId: newPersonId, faces: [face] });
+      }
+    }
+
+    // 3. Save clusters to DB
+    processed = 0;
+    const totalClusters = clusters.length;
+
+    for (const cluster of clusters) {
+      const isExisting = sessionPeople.some(p => p.personId === cluster.personId);
+      
+      if (!isExisting) {
+        // Create new person
+        const pPostRes = await fetch('/api/persons', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            personId: cluster.personId,
+            name: 'Unknown Person',
+            thumbnailUrl: cluster.faces[0].thumbnail,
+          }),
+        });
+        if (pPostRes.ok) {
+          const newPerson = await pPostRes.json();
+          sessionPeople.push(newPerson);
+        }
+      }
+
+      // Save all embeddings for this cluster
+      for (const face of cluster.faces) {
+        await fetch('/api/embeddings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            personId: cluster.personId,
+            embedding: face.embedding,
+            imageUrl: face.imageKey,
+            source: 'local',
+          }),
+        });
+      }
+      
+      processed++;
+      setProgress(50 + Math.round((processed / totalClusters) * 50));
     }
 
     setProcessing(false);
@@ -335,6 +369,30 @@ export default function FaceOrganizer() {
       } catch (error) {
         toast.error('Failed to delete person.');
       }
+    }
+  };
+
+  const handleRenamePerson = async () => {
+    if (!selectedPerson || !newName.trim()) return;
+    try {
+      const res = await fetch('/api/persons', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          personId: selectedPerson.personId,
+          name: newName.trim(),
+          thumbnailUrl: selectedPerson.thumbnailUrl
+        }),
+      });
+      if (res.ok) {
+        toast.success('Person renamed.');
+        setIsRenaming(false);
+        const updatedPerson = await res.json();
+        setSelectedPerson(updatedPerson);
+        fetchData();
+      }
+    } catch (error) {
+      toast.error('Failed to rename person.');
     }
   };
 
@@ -490,16 +548,56 @@ export default function FaceOrganizer() {
             {selectedPerson ? (
               <div className="space-y-6">
                 <div className="flex items-center justify-between bg-white p-6 rounded-3xl border border-black/5 shadow-sm">
-                  <div className="flex items-center space-x-4">
+                  <div className="flex items-center space-x-6">
                     <button 
-                      onClick={() => setSelectedPerson(null)}
+                      onClick={() => {
+                        setSelectedPerson(null);
+                        setIsRenaming(false);
+                      }}
                       className="p-2 hover:bg-gray-100 rounded-xl transition-colors"
                     >
                       <X className="w-5 h-5" />
                     </button>
+                    <div className="w-16 h-16 rounded-full overflow-hidden border-2 border-white shadow-md">
+                      <LazyImage
+                        imageKey={selectedPerson.thumbnailUrl}
+                        fallback=""
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
                     <div>
-                      <h3 className="text-xl font-bold">{selectedPerson.name}</h3>
-                      <p className="text-sm text-gray-400">{selectedPerson.photoCount || 0} Photos in Library</p>
+                      {isRenaming ? (
+                        <div className="flex items-center space-x-2">
+                          <input
+                            type="text"
+                            value={newName}
+                            onChange={(e) => setNewName(e.target.value)}
+                            className="px-3 py-1 border rounded-lg focus:ring-2 focus:ring-black/5 outline-none font-bold text-xl"
+                            autoFocus
+                            onKeyDown={(e) => e.key === 'Enter' && handleRenamePerson()}
+                          />
+                          <button 
+                            onClick={handleRenamePerson}
+                            className="p-1.5 bg-black text-white rounded-lg hover:bg-gray-800"
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center space-x-2 group">
+                          <h3 className="text-2xl font-bold">{selectedPerson.name}</h3>
+                          <button 
+                            onClick={() => {
+                              setIsRenaming(true);
+                              setNewName(selectedPerson.name);
+                            }}
+                            className="p-1 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-gray-100 rounded-md"
+                          >
+                            <FolderUp className="w-4 h-4 rotate-90" /> {/* Using as edit icon */}
+                          </button>
+                        </div>
+                      )}
+                      <p className="text-sm text-gray-400 font-medium">{selectedPerson.photoCount || 0} Photos in Library</p>
                     </div>
                   </div>
                   <button 
@@ -507,7 +605,7 @@ export default function FaceOrganizer() {
                     className="flex items-center space-x-2 text-red-500 hover:text-red-600 font-bold text-sm px-4 py-2 rounded-xl bg-red-50 border border-red-100 transition-colors"
                   >
                     <Trash2 className="w-4 h-4" />
-                    <span>Delete Person</span>
+                    <span>Delete</span>
                   </button>
                 </div>
 
@@ -529,7 +627,7 @@ export default function FaceOrganizer() {
                 </div>
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
+              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-8">
                 {people.length === 0 ? (
                   <div className="col-span-full text-center py-20 bg-white rounded-3xl border border-dashed border-black/10">
                     <Users className="w-12 h-12 text-gray-200 mx-auto mb-4" />
@@ -540,9 +638,9 @@ export default function FaceOrganizer() {
                     <div 
                       key={person._id} 
                       onClick={() => setSelectedPerson(person)}
-                      className="bg-white p-4 rounded-3xl border border-black/5 shadow-sm group hover:scale-[1.02] transition-all cursor-pointer"
+                      className="flex flex-col items-center group cursor-pointer"
                     >
-                      <div className="aspect-square rounded-2xl overflow-hidden mb-4 bg-gray-100 relative">
+                      <div className="w-full aspect-square rounded-full overflow-hidden mb-3 bg-gray-100 relative border-2 border-transparent group-hover:border-black/10 transition-all shadow-sm">
                         {person.thumbnailUrl ? (
                           <LazyImage
                             imageKey={person.thumbnailUrl}
@@ -555,13 +653,11 @@ export default function FaceOrganizer() {
                             <Users className="w-8 h-8 text-gray-200" />
                           </div>
                         )}
-                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                          <span className="text-white text-xs font-bold uppercase tracking-widest">View Photos</span>
-                        </div>
+                        <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity" />
                       </div>
-                      <h4 className="font-bold text-center truncate">{person.name}</h4>
-                      <p className="text-[10px] text-gray-400 text-center uppercase tracking-widest mt-1">
-                        {person.photoCount || 0} Photos
+                      <h4 className="font-bold text-sm text-center truncate w-full px-2">{person.name}</h4>
+                      <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mt-0.5">
+                        {person.photoCount || 0}
                       </p>
                     </div>
                   ))
