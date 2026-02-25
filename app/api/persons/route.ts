@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import mongoose from 'mongoose';
 import dbConnect from '@/lib/mongodb';
-import { Person } from '@/lib/models';
+import { Person, FaceEmbedding } from '@/lib/models';
 import { verifyToken } from '@/lib/auth';
 
 export async function GET(req: Request) {
@@ -62,6 +62,39 @@ export async function POST(req: Request) {
     );
 
     return NextResponse.json(person);
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  try {
+    const token = req.headers.get('cookie')?.split(';').find(c => c.trim().startsWith('token='))?.split('=')[1];
+    if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+    const decoded: any = verifyToken(token);
+    if (!decoded) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+    const { searchParams } = new URL(req.url);
+    const personId = searchParams.get('personId');
+
+    await dbConnect();
+    
+    if (personId) {
+      // Delete specific person and their embeddings
+      await Promise.all([
+        Person.deleteOne({ userId: decoded.userId, personId }),
+        FaceEmbedding.deleteMany({ userId: decoded.userId, personId })
+      ]);
+      return NextResponse.json({ message: 'Person deleted' });
+    } else {
+      // Delete all persons and embeddings for this user
+      await Promise.all([
+        Person.deleteMany({ userId: decoded.userId }),
+        FaceEmbedding.deleteMany({ userId: decoded.userId })
+      ]);
+      return NextResponse.json({ message: 'All data cleared' });
+    }
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

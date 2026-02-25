@@ -60,6 +60,7 @@ export default function FaceOrganizer() {
   const [searchResults, setSearchResults] = useState<{ embedding: FaceEmbedding; score: number; confidence: 'High' | 'Medium' | 'Low' }[]>([]);
   const [searchImage, setSearchImage] = useState<string | null>(null);
   const [localImages, setLocalImages] = useState<Record<string, string>>({});
+  const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -306,10 +307,35 @@ export default function FaceOrganizer() {
   };
 
   const handleClearCache = async () => {
-    if (confirm('Are you sure you want to clear your local image cache? This will remove all photos stored in this browser.')) {
-      await clear();
-      setLocalImages({});
-      toast.success('Cache cleared.');
+    if (confirm('Are you sure you want to clear all data? This will remove all photos from your browser and all people from your library.')) {
+      try {
+        await Promise.all([
+          clear(),
+          fetch('/api/persons', { method: 'DELETE' })
+        ]);
+        setLocalImages({});
+        setPeople([]);
+        setEmbeddings([]);
+        setSelectedPerson(null);
+        toast.success('All data cleared.');
+      } catch (error) {
+        toast.error('Failed to clear data.');
+      }
+    }
+  };
+
+  const handleDeletePerson = async (personId: string) => {
+    if (confirm('Are you sure you want to delete this person and all their photos?')) {
+      try {
+        const res = await fetch(`/api/persons?personId=${personId}`, { method: 'DELETE' });
+        if (res.ok) {
+          toast.success('Person deleted.');
+          setSelectedPerson(null);
+          fetchData();
+        }
+      } catch (error) {
+        toast.error('Failed to delete person.');
+      }
     }
   };
 
@@ -460,41 +486,88 @@ export default function FaceOrganizer() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
-            className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6"
+            className="space-y-6"
           >
-            {people.length === 0 ? (
-              <div className="col-span-full text-center py-20 bg-white rounded-3xl border border-dashed border-black/10">
-                <Users className="w-12 h-12 text-gray-200 mx-auto mb-4" />
-                <p className="text-gray-400">No people detected yet. Upload some photos!</p>
-              </div>
-            ) : (
-              people.map((person) => (
-                <div key={person._id} className="bg-white p-4 rounded-3xl border border-black/5 shadow-sm group hover:scale-[1.02] transition-all cursor-pointer">
-                  <div className="aspect-square rounded-2xl overflow-hidden mb-4 bg-gray-100 relative">
-                    {person.thumbnailUrl ? (
-                      <img
-                        src={person.thumbnailUrl}
-                        alt={person.name}
-                        className="w-full h-full object-cover"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).src = 'https://picsum.photos/seed/broken/200';
-                        }}
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center bg-gray-50">
-                        <Users className="w-8 h-8 text-gray-200" />
-                      </div>
-                    )}
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                      <span className="text-white text-xs font-bold uppercase tracking-widest">View Photos</span>
+            {selectedPerson ? (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between bg-white p-6 rounded-3xl border border-black/5 shadow-sm">
+                  <div className="flex items-center space-x-4">
+                    <button 
+                      onClick={() => setSelectedPerson(null)}
+                      className="p-2 hover:bg-gray-100 rounded-xl transition-colors"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                    <div>
+                      <h3 className="text-xl font-bold">{selectedPerson.name}</h3>
+                      <p className="text-sm text-gray-400">{selectedPerson.photoCount || 0} Photos in Library</p>
                     </div>
                   </div>
-                  <h4 className="font-bold text-center truncate">{person.name}</h4>
-                  <p className="text-[10px] text-gray-400 text-center uppercase tracking-widest mt-1">
-                    {person.photoCount || 0} Photos
-                  </p>
+                  <button 
+                    onClick={() => handleDeletePerson(selectedPerson.personId)}
+                    className="flex items-center space-x-2 text-red-500 hover:text-red-600 font-bold text-sm px-4 py-2 rounded-xl bg-red-50 border border-red-100 transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Delete Person</span>
+                  </button>
                 </div>
-              ))
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                  {embeddings
+                    .filter(e => e.personId === selectedPerson.personId)
+                    .map((emb, i) => (
+                      <div key={emb._id} className="bg-white p-2 rounded-2xl border border-black/5 shadow-sm group relative">
+                        <div className="aspect-square rounded-xl overflow-hidden bg-gray-100">
+                          <LazyImage
+                            imageKey={emb.imageUrl}
+                            fallback="https://picsum.photos/200"
+                            className="w-full h-full object-cover"
+                            alt={`Photo ${i}`}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
+                {people.length === 0 ? (
+                  <div className="col-span-full text-center py-20 bg-white rounded-3xl border border-dashed border-black/10">
+                    <Users className="w-12 h-12 text-gray-200 mx-auto mb-4" />
+                    <p className="text-gray-400">No people detected yet. Upload some photos!</p>
+                  </div>
+                ) : (
+                  people.map((person) => (
+                    <div 
+                      key={person._id} 
+                      onClick={() => setSelectedPerson(person)}
+                      className="bg-white p-4 rounded-3xl border border-black/5 shadow-sm group hover:scale-[1.02] transition-all cursor-pointer"
+                    >
+                      <div className="aspect-square rounded-2xl overflow-hidden mb-4 bg-gray-100 relative">
+                        {person.thumbnailUrl ? (
+                          <LazyImage
+                            imageKey={person.thumbnailUrl}
+                            fallback="https://picsum.photos/seed/broken/200"
+                            className="w-full h-full object-cover"
+                            alt={person.name}
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center bg-gray-50">
+                            <Users className="w-8 h-8 text-gray-200" />
+                          </div>
+                        )}
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                          <span className="text-white text-xs font-bold uppercase tracking-widest">View Photos</span>
+                        </div>
+                      </div>
+                      <h4 className="font-bold text-center truncate">{person.name}</h4>
+                      <p className="text-[10px] text-gray-400 text-center uppercase tracking-widest mt-1">
+                        {person.photoCount || 0} Photos
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
             )}
           </motion.div>
         )}
