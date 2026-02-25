@@ -48,5 +48,8 @@ export async function getFaceEmbeddings(imageElement: HTMLImageElement | HTMLCan
 }
 
 export function calculateDistance(embedding1: number[], embedding2: number[]) {
+  if (!embedding1 || !embedding2 || embedding1.length === 0 || embedding1.length !== embedding2.length) {
+    return 1; // Return max distance (no match) if vectors are incompatible
+  }
   return faceapi.euclideanDistance(embedding1, embedding2);
 }

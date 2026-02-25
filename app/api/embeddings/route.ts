@@ -41,20 +41,27 @@ export async function POST(req: Request) {
     // Update Person's centroid for faster vector search
     const allEmbeddings = await FaceEmbedding.find({ personId, userId: decoded.userId });
     if (allEmbeddings.length > 0) {
-      const vectorSize = allEmbeddings[0].embedding.length;
-      const sumVector = new Array(vectorSize).fill(0);
+      // Filter out any embeddings that might be corrupted or have wrong length
+      const validEmbeddings = allEmbeddings.filter(e => e.embedding && e.embedding.length > 0);
       
-      for (const emb of allEmbeddings) {
-        for (let i = 0; i < vectorSize; i++) {
-          sumVector[i] += emb.embedding[i];
+      if (validEmbeddings.length > 0) {
+        const vectorSize = validEmbeddings[0].embedding.length;
+        const sumVector = new Array(vectorSize).fill(0);
+        
+        for (const emb of validEmbeddings) {
+          if (emb.embedding.length === vectorSize) {
+            for (let i = 0; i < vectorSize; i++) {
+              sumVector[i] += emb.embedding[i];
+            }
+          }
         }
+        
+        const centroid = sumVector.map(v => v / validEmbeddings.length);
+        await Person.findOneAndUpdate(
+          { personId, userId: decoded.userId },
+          { centroid }
+        );
       }
-      
-      const centroid = sumVector.map(v => v / allEmbeddings.length);
-      await Person.findOneAndUpdate(
-        { personId, userId: decoded.userId },
-        { centroid }
-      );
     }
 
     return NextResponse.json(newEmbedding);
