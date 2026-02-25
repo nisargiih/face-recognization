@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { toast } from 'react-hot-toast';
-import { FolderUp, Link as LinkIcon, Search, Users, Loader2, Image as ImageIcon, X, CheckCircle2, AlertCircle, ShieldCheck, Trash2 } from 'lucide-react';
+import { FolderUp, Link as LinkIcon, Search, Users, Loader2, Image as ImageIcon, X, CheckCircle2, AlertCircle, ShieldCheck, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { getFaceEmbeddings, calculateDistance } from '@/lib/face-recognition';
 import { set, get, keys, clear } from 'idb-keyval';
@@ -62,6 +62,9 @@ export default function FaceOrganizer() {
   const [progress, setProgress] = useState(0);
   const [gdriveUrl, setGdriveUrl] = useState('');
   const [people, setPeople] = useState<Person[]>([]);
+  const [totalPages, setTotalPages] = useState(1);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPeople, setTotalPeople] = useState(0);
   const [embeddings, setEmbeddings] = useState<FaceEmbedding[]>([]);
   const [searchResults, setSearchResults] = useState<{ embedding: FaceEmbedding; score: number; confidence: 'High' | 'Medium' | 'Low' }[]>([]);
   const [searchImage, setSearchImage] = useState<string | null>(null);
@@ -75,19 +78,24 @@ export default function FaceOrganizer() {
   useEffect(() => {
     const init = async () => {
       setInitialLoading(true);
-      await Promise.all([fetchData(), loadLocalImages()]);
+      await Promise.all([fetchData(currentPage), loadLocalImages()]);
       setInitialLoading(false);
     };
     init();
-  }, []);
+  }, [currentPage]);
 
-  const fetchData = async () => {
+  const fetchData = async (page = 1) => {
     try {
       const [pRes, eRes] = await Promise.all([
-        fetch('/api/persons'),
+        fetch(`/api/persons?page=${page}&limit=24`),
         fetch('/api/embeddings')
       ]);
-      if (pRes.ok) setPeople(await pRes.json());
+      if (pRes.ok) {
+        const data = await pRes.json();
+        setPeople(data.people);
+        setTotalPages(data.totalPages);
+        setTotalPeople(data.total);
+      }
       if (eRes.ok) setEmbeddings(await eRes.json());
     } catch (error) {
       console.error('Failed to fetch data');
@@ -364,7 +372,7 @@ export default function FaceOrganizer() {
         if (res.ok) {
           toast.success('Person deleted.');
           setSelectedPerson(null);
-          fetchData();
+          fetchData(currentPage);
         }
       } catch (error) {
         toast.error('Failed to delete person.');
@@ -389,7 +397,7 @@ export default function FaceOrganizer() {
         setIsRenaming(false);
         const updatedPerson = await res.json();
         setSelectedPerson(updatedPerson);
-        fetchData();
+        fetchData(currentPage);
       }
     } catch (error) {
       toast.error('Failed to rename person.');
@@ -627,40 +635,76 @@ export default function FaceOrganizer() {
                 </div>
               </div>
             ) : (
-              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-8">
-                {people.length === 0 ? (
-                  <div className="col-span-full text-center py-20 bg-white rounded-3xl border border-dashed border-black/10">
-                    <Users className="w-12 h-12 text-gray-200 mx-auto mb-4" />
-                    <p className="text-gray-400">No people detected yet. Upload some photos!</p>
-                  </div>
-                ) : (
-                  people.map((person) => (
-                    <div 
-                      key={person._id} 
-                      onClick={() => setSelectedPerson(person)}
-                      className="flex flex-col items-center group cursor-pointer"
-                    >
-                      <div className="w-full aspect-square rounded-full overflow-hidden mb-3 bg-gray-100 relative border-2 border-transparent group-hover:border-black/10 transition-all shadow-sm">
-                        {person.thumbnailUrl ? (
-                          <LazyImage
-                            imageKey={person.thumbnailUrl}
-                            fallback=""
-                            className="w-full h-full object-cover"
-                            alt={person.name}
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center bg-gray-50">
-                            <Users className="w-8 h-8 text-gray-200" />
-                          </div>
-                        )}
-                        <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity" />
-                      </div>
-                      <h4 className="font-bold text-sm text-center truncate w-full px-2">{person.name}</h4>
-                      <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mt-0.5">
-                        {person.photoCount || 0}
-                      </p>
+              <div className="space-y-8">
+                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-8">
+                  {people.length === 0 ? (
+                    <div className="col-span-full text-center py-20 bg-white rounded-3xl border border-dashed border-black/10">
+                      <Users className="w-12 h-12 text-gray-200 mx-auto mb-4" />
+                      <p className="text-gray-400">No people detected yet. Upload some photos!</p>
                     </div>
-                  ))
+                  ) : (
+                    people.map((person) => (
+                      <div 
+                        key={person._id} 
+                        onClick={() => setSelectedPerson(person)}
+                        className="flex flex-col items-center group cursor-pointer"
+                      >
+                        <div className="w-full aspect-square rounded-full overflow-hidden mb-3 bg-gray-100 relative border-2 border-transparent group-hover:border-black/10 transition-all shadow-sm">
+                          {person.thumbnailUrl ? (
+                            <LazyImage
+                              imageKey={person.thumbnailUrl}
+                              fallback=""
+                              className="w-full h-full object-cover"
+                              alt={person.name}
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center bg-gray-50">
+                              <Users className="w-8 h-8 text-gray-200" />
+                            </div>
+                          )}
+                          <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
+                        <h4 className="font-bold text-sm text-center truncate w-full px-2">{person.name}</h4>
+                        <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mt-0.5">
+                          {person.photoCount || 0}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-center space-x-4 pt-8 border-t border-black/5">
+                    <button
+                      onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                      disabled={currentPage === 1}
+                      className="p-2 rounded-xl hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                    >
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                    <div className="flex items-center space-x-2">
+                      {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
+                        <button
+                          key={page}
+                          onClick={() => setCurrentPage(page)}
+                          className={`w-10 h-10 rounded-xl font-bold text-sm transition-all ${
+                            currentPage === page 
+                              ? 'bg-black text-white shadow-md' 
+                              : 'text-gray-400 hover:text-black hover:bg-gray-100'
+                          }`}
+                        >
+                          {page}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                      disabled={currentPage === totalPages}
+                      className="p-2 rounded-xl hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                    >
+                      <ChevronRight className="w-5 h-5" />
+                    </button>
+                  </div>
                 )}
               </div>
             )}

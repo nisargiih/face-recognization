@@ -12,33 +12,56 @@ export async function GET(req: Request) {
     const decoded: any = verifyToken(token);
     if (!decoded) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
+    const { searchParams } = new URL(req.url);
+    const page = parseInt(searchParams.get('page') || '1');
+    const limit = parseInt(searchParams.get('limit') || '50');
+    const skip = (page - 1) * limit;
+
     await dbConnect();
     
-    const persons = await Person.aggregate([
-      { $match: { userId: new mongoose.Types.ObjectId(decoded.userId) } },
+    const matchStage = { userId: new mongoose.Types.ObjectId(decoded.userId) };
+
+    const [results] = await Person.aggregate([
+      { $match: matchStage },
       {
-        $lookup: {
-          from: 'faceembeddings',
-          localField: 'personId',
-          foreignField: 'personId',
-          as: 'photos'
+        $facet: {
+          metadata: [{ $count: 'total' }],
+          data: [
+            { $sort: { createdAt: -1 } },
+            { $skip: skip },
+            { $limit: limit },
+            {
+              $lookup: {
+                from: 'faceembeddings',
+                localField: 'personId',
+                foreignField: 'personId',
+                as: 'photos'
+              }
+            },
+            {
+              $project: {
+                _id: 1,
+                personId: 1,
+                name: 1,
+                thumbnailUrl: 1,
+                centroid: 1,
+                createdAt: 1,
+                photoCount: { $size: '$photos' }
+              }
+            }
+          ]
         }
-      },
-      {
-        $project: {
-          _id: 1,
-          personId: 1,
-          name: 1,
-          thumbnailUrl: 1,
-          centroid: 1,
-          createdAt: 1,
-          photoCount: { $size: '$photos' }
-        }
-      },
-      { $sort: { createdAt: -1 } }
+      }
     ]);
 
-    return NextResponse.json(persons);
+    const total = results.metadata[0]?.total || 0;
+
+    return NextResponse.json({
+      people: results.data,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit)
+    });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
