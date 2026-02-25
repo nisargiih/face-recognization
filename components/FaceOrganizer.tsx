@@ -56,7 +56,7 @@ export default function FaceOrganizer() {
   const [gdriveUrl, setGdriveUrl] = useState('');
   const [people, setPeople] = useState<Person[]>([]);
   const [embeddings, setEmbeddings] = useState<FaceEmbedding[]>([]);
-  const [searchResults, setSearchResults] = useState<{ embedding: FaceEmbedding; score: number }[]>([]);
+  const [searchResults, setSearchResults] = useState<{ embedding: FaceEmbedding; score: number; confidence: 'High' | 'Medium' | 'Low' }[]>([]);
   const [searchImage, setSearchImage] = useState<string | null>(null);
   const [localImages, setLocalImages] = useState<Record<string, string>>({});
 
@@ -129,9 +129,16 @@ export default function FaceOrganizer() {
     const total = files.length;
     let processed = 0;
 
-    // Keep track of new people and embeddings created in this session to avoid duplicates
-    const sessionEmbeddings = [...embeddings];
-    const sessionPeople = [...people];
+    // Fetch latest data to ensure we have the most up-to-date state for clustering
+    const [pRes, eRes] = await Promise.all([
+      fetch('/api/persons'),
+      fetch('/api/embeddings')
+    ]);
+    const currentPeople: Person[] = pRes.ok ? await pRes.json() : [];
+    const currentEmbeddings: FaceEmbedding[] = eRes.ok ? await eRes.json() : [];
+
+    const sessionEmbeddings = [...currentEmbeddings];
+    const sessionPeople = [...currentPeople];
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -148,14 +155,14 @@ export default function FaceOrganizer() {
         for (const face of faces) {
           let matchedPersonId = `person_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
           let bestMatch = null;
-          let minDistance = 0.5; // Stricter threshold for clustering
+          let minDistance = 0.6; // Standard threshold for face-api.js
           let isDuplicate = false;
 
           for (const existing of sessionEmbeddings) {
             const dist = calculateDistance(face.embedding, existing.embedding);
             
-            // If distance is extremely low, it's likely the exact same photo/face re-uploaded
-            if (dist < 0.02) {
+            // If distance is extremely low, it's the exact same face/photo
+            if (dist < 0.05) {
               isDuplicate = true;
               break;
             }
@@ -172,7 +179,7 @@ export default function FaceOrganizer() {
             matchedPersonId = bestMatch.personId;
           } else {
             // Create new person
-            const pRes = await fetch('/api/persons', {
+            const pPostRes = await fetch('/api/persons', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -181,8 +188,8 @@ export default function FaceOrganizer() {
                 thumbnailUrl: optimizedImageUrl,
               }),
             });
-            if (pRes.ok) {
-              const newPerson = await pRes.json();
+            if (pPostRes.ok) {
+              const newPerson = await pPostRes.json();
               sessionPeople.push(newPerson);
             }
           }
@@ -199,7 +206,7 @@ export default function FaceOrganizer() {
             throw err;
           }
 
-          const eRes = await fetch('/api/embeddings', {
+          const ePostRes = await fetch('/api/embeddings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -210,8 +217,8 @@ export default function FaceOrganizer() {
             }),
           });
 
-          if (eRes.ok) {
-            const newEmbedding = await eRes.json();
+          if (ePostRes.ok) {
+            const newEmbedding = await ePostRes.json();
             sessionEmbeddings.push(newEmbedding);
           }
         }
@@ -246,17 +253,30 @@ export default function FaceOrganizer() {
         return;
       }
 
-      const results: { embedding: FaceEmbedding; score: number }[] = [];
+      const personMatches: Record<string, { embedding: FaceEmbedding; score: number; confidence: 'High' | 'Medium' | 'Low' }> = {};
+      
       for (const face of faces) {
         for (const existing of embeddings) {
           const dist = calculateDistance(face.embedding, existing.embedding);
+          
+          // Refined threshold logic with confidence levels
+          // face-api.js standard: < 0.6 is a match
           if (dist < 0.6) {
-            results.push({ embedding: existing, score: 1 - dist });
+            const score = 1 - dist;
+            let confidence: 'High' | 'Medium' | 'Low' = 'Low';
+            
+            if (dist < 0.4) confidence = 'High';
+            else if (dist < 0.5) confidence = 'Medium';
+
+            // Only keep the best match per person
+            if (!personMatches[existing.personId] || score > personMatches[existing.personId].score) {
+              personMatches[existing.personId] = { embedding: existing, score, confidence };
+            }
           }
         }
       }
 
-      setSearchResults(results.sort((a, b) => b.score - a.score));
+      setSearchResults(Object.values(personMatches).sort((a, b) => b.score - a.score));
       setActiveTab('search');
     } catch (error) {
       toast.error('Search failed.');
@@ -509,8 +529,17 @@ export default function FaceOrganizer() {
                           alt={`Match ${i}`}
                         />
                       </div>
-                      <div className="absolute top-3 right-3 bg-black/80 text-white text-[10px] font-bold px-2 py-1 rounded-full backdrop-blur-md border border-white/10">
-                        {Math.round(result.score * 100)}% Match
+                      <div className="absolute top-3 right-3 flex flex-col items-end gap-1">
+                        <div className={`text-[10px] font-bold px-2 py-1 rounded-full backdrop-blur-md border ${
+                          result.confidence === 'High' ? 'bg-emerald-500/80 border-emerald-400' :
+                          result.confidence === 'Medium' ? 'bg-amber-500/80 border-amber-400' :
+                          'bg-gray-500/80 border-gray-400'
+                        } text-white`}>
+                          {result.confidence} Match
+                        </div>
+                        <div className="bg-black/60 text-white text-[8px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm">
+                          {Math.round(result.score * 100)}%
+                        </div>
                       </div>
                     </div>
                   ))}
